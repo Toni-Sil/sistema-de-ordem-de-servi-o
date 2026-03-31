@@ -1,0 +1,145 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "System user with roles (admin, gestor, tecnico)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["admin", "gestor", "tecnico"] },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "email", "role"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "Customer information",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "address": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name"]
+    },
+    "Service": {
+      "title": "Service",
+      "description": "Types of services offered",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "required": ["name"]
+    },
+    "ServiceOrder": {
+      "title": "Service Order",
+      "description": "Upholstery service order (reforma)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "number": { "type": "integer" },
+        "description": { "type": "string" },
+        "priority": { "type": "string", "enum": ["baixa", "media", "alta"] },
+        "status": { "type": "string", "enum": ["aberta", "em_andamento", "pausada", "concluida", "cancelada", "reagendada"] },
+        "client_id": { "type": "string" },
+        "assigned_to": { "type": "string" },
+        "scheduled_at": { "type": "string", "format": "date-time" },
+        "deadline": { "type": "string", "format": "date-time" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "furnitureType": { "type": "string" },
+        "fabric": { "type": "string" },
+        "signature": { "type": "string" }
+      },
+      "required": ["description", "priority", "status", "client_id"]
+    },
+    "Checklist": {
+      "title": "Checklist",
+      "description": "Checklist for a service order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "service_order_id": { "type": "string" },
+        "title": { "type": "string" }
+      },
+      "required": ["service_order_id", "title"]
+    },
+    "ChecklistItem": {
+      "title": "Checklist Item",
+      "description": "Individual item in a checklist",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "checklist_id": { "type": "string" },
+        "description": { "type": "string" },
+        "completed": { "type": "boolean" }
+      },
+      "required": ["checklist_id", "description"]
+    },
+    "Attachment": {
+      "title": "Attachment",
+      "description": "Photo or file attached to a service order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "service_order_id": { "type": "string" },
+        "file_url": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["service_order_id", "file_url"]
+    },
+    "StatusLog": {
+      "title": "Status Log",
+      "description": "Audit log for status changes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "service_order_id": { "type": "string" },
+        "old_status": { "type": "string" },
+        "new_status": { "type": "string" },
+        "changed_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["service_order_id", "new_status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/clients/{clientId}": {
+      "schema": "Client",
+      "description": "Client database"
+    },
+    "/services/{serviceId}": {
+      "schema": "Service",
+      "description": "Service catalog"
+    },
+    "/service_orders/{orderId}": {
+      "schema": "ServiceOrder",
+      "description": "Main service orders"
+    },
+    "/service_orders/{orderId}/checklists/{checklistId}": {
+      "schema": "Checklist",
+      "description": "Checklists for orders"
+    },
+    "/service_orders/{orderId}/checklists/{checklistId}/items/{itemId}": {
+      "schema": "ChecklistItem",
+      "description": "Items within checklists"
+    },
+    "/service_orders/{orderId}/attachments/{attachmentId}": {
+      "schema": "Attachment",
+      "description": "Photos and files"
+    },
+    "/service_orders/{orderId}/status_logs/{logId}": {
+      "schema": "StatusLog",
+      "description": "Audit trail"
+    }
+  }
+}

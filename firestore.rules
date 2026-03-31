@@ -1,0 +1,185 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: /users/{userId}
+// Fields:
+//   - name: string (required)
+//   - email: string (required, email format)
+//   - role: string (required, enum: admin, gestor, tecnico)
+//   - created_at: timestamp (optional)
+//
+// Collection: /clients/{clientId}
+// Fields:
+//   - name: string (required)
+//   - phone: string (optional)
+//   - email: string (optional, email format)
+//   - address: string (optional)
+//   - created_at: timestamp (optional)
+//
+// Collection: /service_orders/{orderId}
+// Fields:
+//   - number: int (optional)
+//   - description: string (required)
+//   - priority: string (required, enum: baixa, media, alta)
+//   - status: string (required, enum: aberta, em_andamento, pausada, concluida, cancelada, reagendada)
+//   - client_id: string (required)
+//   - assigned_to: string (optional)
+//   - scheduled_at: timestamp (optional)
+//   - deadline: timestamp (optional)
+//   - created_at: timestamp (optional)
+//   - furnitureType: string (optional)
+//   - fabric: string (optional)
+//   - signature: string (optional)
+//   - installationPhoto: string (optional)
+//   - isReadyForInstallation: bool (optional)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          ((request.auth.token.email == "roselinovais513@gmail.com" || request.auth.token.email == "adaoantonio248@gmail.com") && request.auth.token.email_verified == true));
+    }
+
+    function isGestor() {
+      return isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'gestor';
+    }
+
+    function isStaff() {
+      return isAdmin() || isGestor();
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string &&
+        dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function isValidSimpleDateString(dateStr) {
+      return dateStr is string &&
+        dateStr.matches("^\\d{4}-\\d{2}-\\d{2}$");
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasRequiredFields(['name', 'email', 'role']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             isValidEmail(data.email) &&
+             data.role in ['admin', 'gestor', 'tecnico'];
+    }
+
+    function isValidClient(data) {
+      return hasRequiredFields(['name']) &&
+             hasOnlyAllowedFields(['name', 'phone', 'email', 'address', 'created_at']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             (!('email' in data) || data.email == "" || isValidEmail(data.email)) &&
+             (!('phone' in data) || data.phone is string) &&
+             (!('address' in data) || data.address is string) &&
+             (!('created_at' in data) || isValidDateString(data.created_at));
+    }
+
+    function isValidServiceOrder(data) {
+      return hasRequiredFields(['description', 'priority', 'status', 'client_id']) &&
+             hasOnlyAllowedFields(['description', 'priority', 'status', 'client_id', 'number', 'created_at', 'checklist', 'assigned_to', 'furnitureType', 'fabric', 'signature', 'deadline', 'isReadyForInstallation', 'installationPhoto']) &&
+             data.description is string && data.description.size() < 1000 &&
+             data.priority in ['baixa', 'media', 'alta'] &&
+             data.status in ['aberta', 'em_andamento', 'pausada', 'concluida', 'cancelada', 'reagendada'] &&
+             data.client_id is string &&
+             (!('number' in data) || data.number is int) &&
+             (!('created_at' in data) || isValidDateString(data.created_at)) &&
+             (!('deadline' in data) || data.deadline == "" || isValidSimpleDateString(data.deadline)) &&
+             (!('checklist' in data) || data.checklist is list) &&
+             (!('assigned_to' in data) || data.assigned_to is string) &&
+             (!('furnitureType' in data) || data.furnitureType is string) &&
+             (!('fabric' in data) || data.fabric is string) &&
+             (!('signature' in data) || data.signature is string) &&
+             (!('installationPhoto' in data) || data.installationPhoto is string) &&
+             (!('isReadyForInstallation' in data) || data.isReadyForInstallation is bool);
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && 
+                    (isOwner(userId) || isStaff()) && 
+                    (request.resource.data.role != 'admin' || isAdmin());
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && 
+                    (isOwner(userId) || isStaff()) && 
+                    (request.resource.data.role == resource.data.role || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /clients/{clientId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidClient(request.resource.data);
+      allow update: if isAuthenticated() && isValidClient(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /services/{serviceId} {
+      allow read: if isAuthenticated();
+      allow write: if isStaff();
+    }
+
+    match /service_orders/{orderId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidServiceOrder(request.resource.data);
+      allow update: if isAuthenticated() && isValidServiceOrder(request.resource.data);
+      allow delete: if isAuthenticated();
+
+      match /checklists/{checklistId} {
+        allow read: if isAuthenticated();
+        allow write: if isAuthenticated();
+        
+        match /items/{itemId} {
+          allow read: if isAuthenticated();
+          allow write: if isAuthenticated();
+        }
+      }
+
+      match /attachments/{attachmentId} {
+        allow read: if isAuthenticated();
+        allow write: if isAuthenticated();
+      }
+
+      match /status_logs/{logId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated();
+      }
+    }
+  }
+}

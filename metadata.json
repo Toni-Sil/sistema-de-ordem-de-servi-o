@@ -1,0 +1,9 @@
+{
+  "name": "Só Sofá Cama para Caminhões",
+  "description": "Especialistas em conforto para sua viagem. Gestão de reformas e estofados para caminhões.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation",
+    "microphone"
+  ]
+}
