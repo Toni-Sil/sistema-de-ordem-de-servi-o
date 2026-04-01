@@ -59,60 +59,114 @@ export function VoiceAssistant({ onDataExtracted, clients }: VoiceAssistantProps
         try {
           const base64Audio = (reader.result as string).split(',')[1];
           
-          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+          const aiProvider = localStorage.getItem('AI_PROVIDER') || 'gemini';
+          const savedKey = localStorage.getItem('GEMINI_API_KEY') || process.env.GEMINI_API_KEY;
           
+          if (!savedKey) {
+            throw new Error('Chave de API não configurada.');
+          }
+
           const prompt = `
             Você é um assistente especializado em gestão de tapeçarias. 
-            Analise o áudio e extraia informações para uma nova Ordem de Serviço (OS).
+            Extraia informações para uma nova Ordem de Serviço (OS).
             
             Lista de clientes cadastrados:
             ${clients.map(c => `- ${c.name} (ID: ${c.id})`).join('\n')}
             
-            Tente encontrar o cliente na lista acima. Se não encontrar, retorne o nome mencionado.
-            O sistema pode cadastrar novos clientes se você extrair o nome e o whatsapp corretamente.
-            
-            Extraia os seguintes campos em JSON:
-            - client_id: ID do cliente se encontrado na lista, caso contrário null.
-            - clientName: Nome do cliente mencionado (se não encontrado na lista).
-            - whatsapp: Número do WhatsApp mencionado (se não encontrado na lista).
-            - furnitureType: Tipo de móvel (ex: Sofá, Poltrona, Cadeira).
-            - fabric: Tipo de tecido mencionado.
-            - description: Descrição detalhada do serviço.
-            - priority: 'baixa', 'media' ou 'alta'.
-            - deadline: Data sugerida no formato YYYY-MM-DD (se mencionada).
+            TABELA DE SERVIÇOS E PREÇOS (se o serviço mencionado se encaixar num desses perfis, atribua o valor correspondente no campo "value" do JSON):
+            - Cama gaúcha leito / Cama gaúcha luxo / Cama gaucha (Sofá-cama): 2600.00
+            - Sofá-cama Constellation / Vox Delivery / MB Acelo Bolha / Cabine simples luxo (Sofá-cama): 2400.00
+            - Sofá-cama econômico / Econômico cabine simples (Sofá-cama): 2050.00
+            - Sofá-cama Voxter Livre: 2500.00
+            - Cama gaúcha econômica: 2100.00
+            - Forração cabine (Reforma): 3600.00
+            - Ar-condicionado (Climatização padrão): 5500.00
+            - Ar condicionado (Climatização superior): 6600.00
+            - Tapete Courino cabine leito (Reforma): 1200.00
+            - Maleiro teto alto / Maleiro / Tapete Courino / Tapete assoalho / Reforma banco motorista: 950.00
+            - Maleiro teto baixo (Armazenamento): 850.00
+            - Jogo cortina (Reforma): 450.00
+            - Capa painel (Reforma): 420.00
+            - Conserto trilho (Conserto): 250.00
+            - Forração porta (Reforma): 240.00
+
+            Extraia os seguintes campos OBRIGATORIAMENTE em JSON puro:
+            {
+              "client_id": "ID se encontrado, senao null",
+              "clientName": "Nome se não encontrado, senao null",
+              "whatsapp": "Numero se não encontrado, senao null",
+              "furnitureType": "Sofá, Poltrona, Cortina... (Obrigatorio)",
+              "fabric": "Tecido mencionado",
+              "truckPlate": "Placa se houver, senao null",
+              "truckModel": "Modelo se houver, senao null",
+              "description": "Detalhes completos do serviço e restrições (Obrigatorio)",
+              "priority": "baixa, media ou alta (Obrigatorio)",
+              "deadline": "YYYY-MM-DD",
+              "value": "Preço tabelado caso encontrado (ex: '2600.00'), se não encontrar deixe nulo ou tente inferir baseado no valor mais próximo"
+            }
           `;
 
-          const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: [
-              { text: prompt },
-              {
-                inlineData: {
-                  mimeType: "audio/webm",
-                  data: base64Audio,
-                },
-              },
-            ],
-            config: {
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  client_id: { type: Type.STRING, nullable: true },
-                  clientName: { type: Type.STRING, nullable: true },
-                  whatsapp: { type: Type.STRING, nullable: true },
-                  furnitureType: { type: Type.STRING },
-                  fabric: { type: Type.STRING },
-                  description: { type: Type.STRING },
-                  priority: { type: Type.STRING, enum: ['baixa', 'media', 'alta'] },
-                  deadline: { type: Type.STRING, nullable: true },
-                },
-                required: ['furnitureType', 'fabric', 'description', 'priority'],
-              },
-            },
-          });
+          let extractedData = null;
 
-          const extractedData = JSON.parse(response.text);
+          if (aiProvider === 'openai') {
+            // 1. Transcribe Audio
+            const formData = new FormData();
+            formData.append('file', audioBlob, 'audio.webm');
+            formData.append('model', 'whisper-1');
+            
+            const transRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${savedKey}` },
+              body: formData
+            });
+            
+            if (!transRes.ok) throw new Error('Falha na transcrição OpenAI');
+            const transcription = await transRes.json();
+            
+            // 2. Extact attributes
+            const gptRes = await fetch('https://api.openai.com/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${savedKey}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                model: 'gpt-4o-mini',
+                response_format: { type: "json_object" },
+                messages: [
+                  { role: "system", content: prompt },
+                  { role: "user", content: "Transcrevi um áudio do técnico. Extraia o JSON conforme regra:\n" + transcription.text }
+                ]
+              })
+            });
+            if (!gptRes.ok) throw new Error('Falha na extração JSON da OpenAI');
+            const gptData = await gptRes.json();
+            extractedData = JSON.parse(gptData.choices[0].message.content);
+
+          } else {
+            // Gemini
+            const payload = {
+              contents: [{
+                parts: [
+                  { text: prompt },
+                  { inlineData: { mimeType: "audio/webm", data: base64Audio } }
+                ]
+              }],
+              generationConfig: { responseMimeType: "application/json" }
+            };
+
+            const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${savedKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+
+            if (!geminiRes.ok) throw new Error('Falha na comunicação com o Gemini');
+            const geminiData = await geminiRes.json();
+            const textResponse = geminiData.candidates[0].content.parts[0].text;
+            extractedData = JSON.parse(textResponse);
+          }
+
           onDataExtracted(extractedData);
         } catch (err) {
           console.error('Error processing audio with AI:', err);

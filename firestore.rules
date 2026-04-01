@@ -111,7 +111,7 @@ service cloud.firestore {
 
     function isValidServiceOrder(data) {
       return hasRequiredFields(['description', 'priority', 'status', 'client_id']) &&
-             hasOnlyAllowedFields(['description', 'priority', 'status', 'client_id', 'number', 'created_at', 'checklist', 'assigned_to', 'furnitureType', 'fabric', 'signature', 'deadline', 'isReadyForInstallation', 'installationPhoto']) &&
+             hasOnlyAllowedFields(['description', 'priority', 'status', 'client_id', 'number', 'created_at', 'checklist', 'assigned_to', 'furnitureType', 'fabric', 'signature', 'deadline', 'isReadyForInstallation', 'installationPhoto', 'truckPlate', 'truckModel', 'value', 'paymentMethod', 'notes', 'service_id']) &&
              data.description is string && data.description.size() < 1000 &&
              data.priority in ['baixa', 'media', 'alta'] &&
              data.status in ['aberta', 'em_andamento', 'pausada', 'concluida', 'cancelada', 'reagendada'] &&
@@ -125,7 +125,13 @@ service cloud.firestore {
              (!('fabric' in data) || data.fabric is string) &&
              (!('signature' in data) || data.signature is string) &&
              (!('installationPhoto' in data) || data.installationPhoto is string) &&
-             (!('isReadyForInstallation' in data) || data.isReadyForInstallation is bool);
+             (!('isReadyForInstallation' in data) || data.isReadyForInstallation is bool) &&
+             (!('truckPlate' in data) || data.truckPlate is string) &&
+             (!('truckModel' in data) || data.truckModel is string) &&
+             (!('value' in data) || data.value is string) &&
+             (!('paymentMethod' in data) || data.paymentMethod is string) &&
+             (!('notes' in data) || data.notes is string) &&
+             (!('service_id' in data) || data.service_id is string);
     }
 
     // ===============================================================

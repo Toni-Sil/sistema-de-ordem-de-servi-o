@@ -54,6 +54,8 @@ export interface ServiceOrder {
   installationPhoto?: string;
   isReadyForInstallation?: boolean;
   checklist?: ChecklistItem[];
+  truckPlate?: string;
+  truckModel?: string;
 }
 
 export interface DashboardStats {

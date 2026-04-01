@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { format, startOfWeek, addDays, startOfMonth, endOfMonth, endOfWeek, isSameMonth, isSameDay, addMonths, subMonths, addWeeks, subWeeks } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { 
-  LayoutDashboard, 
-  ClipboardList, 
-  Users, 
-  Settings, 
-  Plus, 
-  Search, 
+import {
+  LayoutDashboard,
+  ClipboardList,
+  Users,
+  Settings,
+  Plus,
+  Search,
   Bell,
   CheckCircle2,
   Clock,
@@ -45,13 +45,13 @@ import {
   BarChart as BarChartIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
   ResponsiveContainer,
   Cell,
   PieChart,
@@ -60,24 +60,26 @@ import {
 import { ServiceOrder, DashboardStats, OSPriority, OSStatus, UserProfile, Client, UserRole, Service } from './types';
 import jsPDF from 'jspdf';
 import { VoiceAssistant } from './components/VoiceAssistant';
+import { GoogleGenAI } from "@google/genai";
 import Logo from './components/Logo';
-import { 
-  auth, 
-  db, 
-  googleProvider, 
-  signInWithPopup, 
-  signOut, 
-  onAuthStateChanged, 
-  collection, 
-  onSnapshot, 
-  query, 
+import {
+  auth,
+  db,
+  googleProvider,
+  signInWithPopup,
+  signOut,
+  signInAnonymously,
+  onAuthStateChanged,
+  collection,
+  onSnapshot,
+  query,
   where,
   getDocs,
-  orderBy, 
-  addDoc, 
-  updateDoc, 
+  orderBy,
+  addDoc,
+  updateDoc,
   deleteDoc,
-  doc, 
+  doc,
   getDoc,
   setDoc,
   FirebaseUser,
@@ -101,6 +103,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [apiKey, setApiKey] = useState(localStorage.getItem('GEMINI_API_KEY') || '');
+  const [aiProvider, setAiProvider] = useState(localStorage.getItem('AI_PROVIDER') || 'gemini');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [confirmAction, setConfirmAction] = useState<{
     title: string;
@@ -141,6 +144,8 @@ export default function App() {
     assigned_to: '',
     furnitureType: '',
     fabric: '',
+    truckPlate: '',
+    truckModel: '',
     value: '',
     paymentMethod: '',
     notes: '',
@@ -170,19 +175,21 @@ export default function App() {
   }, [formData]);
 
   const clearDraft = () => {
-    setFormData({ 
-      client_id: '', 
+    setFormData({
+      client_id: '',
       service_id: '',
-      description: '', 
-      priority: 'media', 
-      assigned_to: '', 
-      furnitureType: '', 
-      fabric: '', 
+      description: '',
+      priority: 'media',
+      assigned_to: '',
+      furnitureType: '',
+      fabric: '',
+      truckPlate: '',
+      truckModel: '',
       value: '',
       paymentMethod: '',
       notes: '',
-      deadline: '', 
-      isReadyForInstallation: false 
+      deadline: '',
+      isReadyForInstallation: false
     });
     localStorage.removeItem('os_draft');
   };
@@ -195,19 +202,27 @@ export default function App() {
       priority: data.priority || prev.priority,
       furnitureType: data.furnitureType || prev.furnitureType,
       fabric: data.fabric || prev.fabric,
-      deadline: data.deadline || prev.deadline
+      truckPlate: data.truckPlate || prev.truckPlate,
+      truckModel: data.truckModel || prev.truckModel,
+      deadline: data.deadline || prev.deadline,
+      value: data.value || prev.value
     }));
-    
+
+    const sanitizeStr = (s: any) => s === "null" || s === "undefined" || s === "" ? null : s;
+    const cid = sanitizeStr(data.client_id);
+    const cname = sanitizeStr(data.clientName);
+    const cphone = sanitizeStr(data.whatsapp);
+
     // If a new client name or WhatsApp was mentioned but not found in ID
-    if (!data.client_id && (data.clientName || data.whatsapp)) {
+    if (!cid && (cname || cphone)) {
       setConfirmAction({
         title: 'NOVO_CLIENTE_DETECTADO',
-        message: `O CLIENTE "${data.clientName || 'DESCONHECIDO'}" NÃO FOI ENCONTRADO. DESEJA CADASTRÁ-LO AGORA?`,
+        message: `O CLIENTE "${cname || 'DESCONHECIDO'}" NÃO FOI ENCONTRADO. DESEJA CADASTRÁ-LO AGORA?`,
         onConfirm: async () => {
           try {
             const docRef = await addDoc(collection(db, 'clients'), {
-              name: data.clientName || 'Novo Cliente',
-              phone: data.whatsapp || '',
+              name: cname || 'Novo Cliente',
+              phone: cphone || '',
               email: '',
               address: '',
               created_at: new Date().toISOString()
@@ -219,8 +234,10 @@ export default function App() {
               message: 'O NOVO CLIENTE FOI REGISTRADO E VINCULADO À ESTA OS.',
               type: 'success'
             });
-          } catch (error) {
-            handleFirestoreError(error, OperationType.CREATE, 'clients');
+          } catch (error: any) {
+            setConfirmAction(null);
+            console.error('Save error:', error);
+            alert("A gravação falhou. A permissão pode estar negada.\nDetalhes: " + error.message);
           }
         }
       });
@@ -234,7 +251,7 @@ export default function App() {
 
   const requestNotificationPermission = async () => {
     if (!("Notification" in window)) return;
-    
+
     const permission = await Notification.requestPermission();
     setNotificationPermission(permission);
     return permission;
@@ -242,14 +259,14 @@ export default function App() {
 
   const showPushNotification = (title: string, body: string) => {
     if (!notifications || notificationPermission !== 'granted') return;
-    
+
     try {
       const notification = new Notification(title, {
         body,
         icon: 'https://cdn-icons-png.flaticon.com/512/3119/3119338.png',
         tag: 'new-os-alert'
       });
-      
+
       notification.onclick = () => {
         window.focus();
         notification.close();
@@ -271,15 +288,15 @@ export default function App() {
   // Auth Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
       if (currentUser) {
+        setUser(currentUser);
         try {
           const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
           if (userDoc.exists()) {
             const existingProfile = userDoc.data() as UserProfile;
             // Sync Google info if it changed
-            if (existingProfile.name !== (currentUser.displayName || 'Usuário') || 
-                existingProfile.photoURL !== (currentUser.photoURL || undefined)) {
+            if (existingProfile.name !== (currentUser.displayName || 'Usuário') ||
+              existingProfile.photoURL !== (currentUser.photoURL || undefined)) {
               const updatedProfile = {
                 ...existingProfile,
                 name: currentUser.displayName || existingProfile.name,
@@ -294,11 +311,11 @@ export default function App() {
             // Check if there's a manual entry with this email
             const manualQuery = query(collection(db, 'users'), where('email', '==', currentUser.email));
             const manualSnap = await getDocs(manualQuery);
-            
+
             if (!manualSnap.empty) {
               const manualDoc = manualSnap.docs[0];
               const manualData = manualDoc.data() as UserProfile;
-              
+
               // Link this Google account to the manual entry
               const linkedProfile: UserProfile = {
                 ...manualData,
@@ -306,7 +323,7 @@ export default function App() {
                 name: currentUser.displayName || manualData.name,
                 photoURL: currentUser.photoURL || undefined,
               };
-              
+
               // Delete the manual entry and create the new linked one
               await deleteDoc(doc(db, 'users', manualDoc.id));
               await setDoc(doc(db, 'users', currentUser.uid), linkedProfile);
@@ -315,7 +332,7 @@ export default function App() {
               // Determine default role
               const defaultAdmins = ["roselinovais513@gmail.com", "adaoantonio248@gmail.com"];
               const role = defaultAdmins.includes(currentUser.email || '') ? 'admin' : 'tecnico';
-              
+
               const newProfile: UserProfile = {
                 id: currentUser.uid,
                 name: currentUser.displayName || 'Usuário',
@@ -341,7 +358,8 @@ export default function App() {
           });
         }
       } else {
-        setUserProfile(null);
+        setUser(prev => prev?.uid === 'admin_local' ? prev : null);
+        setUserProfile(prev => prev?.id === 'admin_local' ? prev : null);
       }
       setLoading(false);
     });
@@ -359,7 +377,7 @@ export default function App() {
         id: doc.id,
         ...doc.data()
       })) as ServiceOrder[];
-      
+
       if (!isFirstLoad && userProfileRef.current && (userProfileRef.current.role === 'admin' || userProfileRef.current.role === 'gestor')) {
         snapshot.docChanges().forEach((change) => {
           if (change.type === "added") {
@@ -431,16 +449,45 @@ export default function App() {
 
   const handleLogin = async () => {
     try {
-      await signInWithPopup(auth, googleProvider);
+      setIsSubmitting(true);
+      const result = await signInWithPopup(auth, googleProvider);
+      setUser(result.user as any);
+
+      // Setup the user in our specific users table if necessary
+      const userRef = doc(db, 'users', result.user.uid);
+      const userDoc = await getDoc(userRef);
+      if (!userDoc.exists()) {
+        const newUserProfile: UserProfile = {
+          id: result.user.uid,
+          name: result.user.displayName || 'Usuário',
+          email: result.user.email || '',
+          role: 'admin', // First user fallback
+          created_at: new Date().toISOString()
+        };
+        await setDoc(userRef, newUserProfile);
+        setUserProfile(newUserProfile);
+      } else {
+        setUserProfile(userDoc.data() as UserProfile);
+      }
+
       await requestNotificationPermission();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Login error:', error);
+      if (error.code === 'auth/unauthorized-domain') {
+        alert("O Firebase bloqueou este acesso porque o 'localhost' não está na lista de domínios seguros.\n\nPara consertar definitivamente e recuperar seus poderes de Admin:\n1. Acesse e faça login no seu Console do Firebase.\n2. Vá no menu esquerdo em 'Authentication' (Autenticação)\n3. Clique na aba superior 'Settings' (Configurações)\n4. Vá em 'Authorized domains' (Domínios autorizados)\n5. Clique em 'Add domain' e adicione a palavra: localhost\n6. Tente logar de novo aqui no sistema!");
+      } else {
+        alert('Erro ao tentar conectar via Google:\n' + (error.message || JSON.stringify(error)));
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const handleLogout = async () => {
     try {
       await signOut(auth);
+      setUser(null);
+      setUserProfile(null);
       setSelectedOS(null);
       setManagementView('none');
     } catch (error) {
@@ -448,9 +495,56 @@ export default function App() {
     }
   };
 
-  const handleSaveApiKey = () => {
-    localStorage.setItem('GEMINI_API_KEY', apiKey);
-    setManagementView('none');
+  const handleSaveApiKey = async () => {
+    if (!apiKey.trim()) return;
+    setIsSubmitting(true);
+    try {
+      let isValid = false;
+      let errorDetalhes = "";
+
+      if (aiProvider === 'openai') {
+        const response = await fetch('https://api.openai.com/v1/models', {
+          headers: { 'Authorization': `Bearer ${apiKey}` }
+        });
+        const data = await response.json();
+        if (response.ok) {
+          isValid = true;
+        } else {
+          errorDetalhes = data.error?.message || response.statusText;
+        }
+      } else {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: "Say 'OK'" }] }]
+          })
+        });
+        const data = await response.json();
+        if (response.ok && data) {
+          isValid = true;
+        } else {
+          errorDetalhes = data.error?.message || response.statusText;
+        }
+      }
+
+      if (isValid) {
+        localStorage.setItem('GEMINI_API_KEY', apiKey);
+        localStorage.setItem('AI_PROVIDER', aiProvider);
+        setManagementView('none');
+        setAlertMessage({
+          title: 'IA_VALIDADA_COM_SUCESSO',
+          message: `O ASSISTENTE ESTÁ FUNCIONANDO VIA ${aiProvider.toUpperCase()}.`,
+          type: 'success'
+        });
+      } else {
+        alert(`Não foi possível validar. O servidor da IA respondeu com falha.\n\nDetalhes do erro: ${errorDetalhes}`);
+      }
+    } catch (error: any) {
+      alert('Houve um erro de conexão de rede:\n' + error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleGenerateApiKey = async () => {
@@ -458,7 +552,7 @@ export default function App() {
     const newApiKey = Array.from(crypto.getRandomValues(new Uint8Array(24)))
       .map(b => b.toString(16).padStart(2, '0'))
       .join('');
-    
+
     try {
       await updateDoc(doc(db, 'users', user.uid), {
         api_key: newApiKey
@@ -473,7 +567,10 @@ export default function App() {
 
   const handleAddClient = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !newClient.name) return;
+    if (!newClient.name) {
+      alert("O nome do cliente é obrigatório!");
+      return;
+    }
     setIsSubmitting(true);
     try {
       await addDoc(collection(db, 'clients'), {
@@ -482,8 +579,10 @@ export default function App() {
       });
       setNewClient({ name: '', phone: '', email: '', address: '' });
       setManagementView('none');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'clients');
+      alert("Cliente cadastrado com sucesso!");
+    } catch (error: any) {
+      console.error('Save error:', error);
+      alert("Falha ao registrar cliente. O servidor não aceitou a gravação. Detalhes: " + error.message);
     } finally {
       setIsSubmitting(false);
     }
@@ -659,7 +758,7 @@ export default function App() {
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           ctx?.drawImage(img, 0, 0, width, height);
-          
+
           // Compress to JPEG with 0.7 quality to stay well under 1MB
           const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
           setCapturedPhoto(dataUrl);
@@ -719,13 +818,13 @@ export default function App() {
     const tech = techs.find(t => t.id === os.assigned_to);
 
     const doc = new jsPDF();
-    
+
     // Header - Logo and Title
     doc.setFontSize(24);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(0, 0, 0);
     doc.text('SÓ SOFÁ-CAMA PARA CAMINHÕES', 105, 50, { align: 'center' });
-    
+
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
     doc.text('■ (19) 97408-2143 | ■ Sumaré/SP', 105, 58, { align: 'center' });
@@ -754,19 +853,21 @@ export default function App() {
     doc.setFont('helvetica', 'bold');
     doc.text('Caminhão: ', 15, 116);
     doc.setFont('helvetica', 'normal');
-    doc.text(os.furnitureType || '', 38, 116);
+    let truckInfo = os.truckModel ? ` - ${os.truckModel}` : '';
+    truckInfo += os.truckPlate ? ` (Placa: ${os.truckPlate})` : '';
+    doc.text(`${os.furnitureType || ''}${truckInfo}`, 38, 116);
     doc.line(38, 117, 195, 117);
 
     // Service Details
     doc.setFontSize(12);
     doc.setFont('helvetica', 'bold');
     doc.text('Serviço a ser realizado:', 15, 130);
-    
+
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
     const splitDescription = doc.splitTextToSize(os.description || '', 180);
     doc.text(splitDescription, 15, 140);
-    
+
     // Draw lines for service description
     for (let i = 0; i < 4; i++) {
       doc.line(15, 142 + (i * 8), 195, 142 + (i * 8));
@@ -796,12 +897,12 @@ export default function App() {
     doc.setFontSize(12);
     doc.setFont('helvetica', 'bold');
     doc.text('Observações:', 15, 220);
-    
+
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
     const splitNotes = doc.splitTextToSize(os.notes || '', 180);
     doc.text(splitNotes, 15, 230);
-    
+
     // Draw lines for observations
     for (let i = 0; i < 3; i++) {
       doc.line(15, 232 + (i * 8), 195, 232 + (i * 8));
@@ -812,7 +913,7 @@ export default function App() {
     doc.setFontSize(10);
     doc.text('Cliente', 60, footerY - 5, { align: 'center' });
     doc.line(30, footerY, 90, footerY);
-    
+
     doc.text('Responsável', 150, footerY - 5, { align: 'center' });
     doc.line(120, footerY, 180, footerY);
 
@@ -822,10 +923,11 @@ export default function App() {
   const shareOnWhatsApp = (os: ServiceOrder) => {
     const client = clients.find(c => c.id === os.client_id);
     const service = services.find(s => s.id === os.service_id);
-    
+
     const message = `*SÓ SOFÁ CAMA - ORDEM DE SERVIÇO Nº ${os.number}*
     
 *Cliente:* ${client?.name || 'Não informado'}
+*Caminhão:* ${os.truckModel || 'Não informado'} - Placa: ${os.truckPlate || 'Não informada'}
 *Serviço:* ${service?.name || 'Geral'}
 *Móvel:* ${os.furnitureType || 'Não informado'}
 *Tecido:* ${os.fabric || 'Não informado'}
@@ -935,12 +1037,12 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
   if (loading) {
     return (
       <div className="h-screen w-screen flex flex-col items-center justify-center bg-brand-dark transition-colors">
-          <motion.div 
-            animate={{ rotate: 360 }}
-            transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-            className="w-16 h-16 border-4 border-brand-red border-t-transparent rounded-full mb-6"
-          />
-          <span className="technical-label text-brand-red animate-pulse">SISTEMA DE GESTÃO • CARREGANDO...</span>
+        <motion.div
+          animate={{ rotate: 360 }}
+          transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+          className="w-16 h-16 border-4 border-brand-red border-t-transparent rounded-full mb-6"
+        />
+        <span className="technical-label text-brand-red animate-pulse">SISTEMA DE GESTÃO • CARREGANDO...</span>
       </div>
     );
   }
@@ -949,13 +1051,13 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
     return (
       <div className="h-screen w-screen flex flex-col bg-brand-dark p-8 relative overflow-hidden technical-grid">
         <div className="scanline" />
-        
+
         {/* Decorative Elements */}
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-brand-red to-transparent opacity-50" />
         <div className="absolute bottom-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-brand-red to-transparent opacity-50" />
-        
+
         <div className="flex-1 flex flex-col justify-center max-w-xl mx-auto w-full space-y-16 relative z-10">
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             className="space-y-8 text-center"
@@ -984,14 +1086,14 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
             </div>
           </motion.div>
 
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.3 }}
             className="space-y-8"
           >
             <div className="technical-card p-1">
-              <button 
+              <button
                 onClick={handleLogin}
                 className="w-full py-6 bg-brand-red text-white font-black uppercase tracking-widest flex items-center justify-center gap-4 hover:bg-white hover:text-brand-red transition-all active:scale-[0.98]"
               >
@@ -999,7 +1101,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                 INICIAR TERMINAL
               </button>
             </div>
-            
+
             <div className="text-center space-y-2">
               <p className="text-[8px] font-mono text-slate-500 uppercase tracking-widest">
                 * NOVOS USUÁRIOS SERÃO REGISTRADOS AUTOMATICAMENTE COMO TAPECEIROS.
@@ -1008,7 +1110,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                 PARA ACESSO GESTOR/ADMIN, SOLICITE VÍNCULO AO ADMINISTRADOR.
               </p>
             </div>
-            
+
             <div className="grid grid-cols-3 gap-4">
               <div className="flex flex-col items-center gap-1">
                 <span className="technical-label text-[8px]">STATUS</span>
@@ -1038,11 +1140,11 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
   return (
     <div className="h-screen w-screen flex flex-col bg-brand-dark text-slate-100 overflow-hidden font-sans select-none technical-grid">
       <div className="scanline" />
-      
+
       {/* Main Header */}
       <header className="bg-brand-surface border-b border-brand-border px-6 py-4 flex items-center justify-between shrink-0 z-20 relative">
         <div className="absolute top-0 left-0 w-full h-[1px] bg-brand-red/30" />
-        
+
         <div className="flex items-center gap-5">
           <div className="w-12 h-12 bg-white rounded-none flex items-center justify-center glow-red relative group overflow-hidden">
             <Logo />
@@ -1062,9 +1164,9 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
             <span className="technical-label text-[8px]">OPERADOR</span>
             <span className="technical-value text-xs">{user?.displayName?.split(' ')[0] || 'ADMIN'}</span>
           </div>
-          
+
           <div className="flex items-center gap-2">
-            <motion.button 
+            <motion.button
               whileTap={{ scale: 0.9 }}
               onClick={() => setIsSearchOpen(!isSearchOpen)}
               className={`p-3 rounded-none transition-all duration-300 border ${isSearchOpen ? 'bg-brand-red border-brand-red text-white glow-red' : 'bg-brand-surface border-brand-border text-slate-500 hover:text-white hover:border-brand-line'}`}
@@ -1084,7 +1186,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
       {/* Search Bar */}
       <AnimatePresence>
         {isSearchOpen && !selectedOS && managementView === 'none' && (
-          <motion.div 
+          <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
@@ -1095,9 +1197,9 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                 <Search className="text-brand-red" size={18} />
                 <div className="w-[1px] h-4 bg-brand-line" />
               </div>
-              <input 
+              <input
                 autoFocus
-                type="text" 
+                type="text"
                 placeholder="BUSCAR NO BANCO DE DADOS..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -1115,7 +1217,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
       <main className="flex-1 overflow-y-auto relative">
         <AnimatePresence mode="wait">
           {selectedOS ? (
-            <motion.div 
+            <motion.div
               key="os-detail"
               initial={{ x: '100%' }}
               animate={{ x: 0 }}
@@ -1124,40 +1226,47 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
               className="absolute inset-0 bg-brand-dark z-30 flex flex-col transition-colors technical-grid"
             >
               <div className="p-6 space-y-8 overflow-y-auto flex-1">
-                    <div className="flex justify-between items-start">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className="technical-label text-brand-red">OS-{selectedOS.number.toString().padStart(4, '0')}</span>
-                          <div className="w-1 h-1 rounded-full bg-brand-red animate-pulse" />
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <h2 className="text-3xl font-black tracking-tight uppercase italic">
-                            {clients.find(c => c.id === selectedOS.client_id)?.name || 'CLIENTE_NULL'}
-                          </h2>
-                          {clients.find(c => c.id === selectedOS.client_id)?.phone && (
-                            <a 
-                              href={`https://wa.me/${clients.find(c => c.id === selectedOS.client_id)?.phone?.replace(/\D/g, '')}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="p-2 bg-brand-surface border border-brand-border text-emerald-500 hover:border-emerald-500 transition-colors"
-                            >
-                              <MessageSquare size={18} />
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                      <PriorityBadge 
-                        priority={getDynamicPriority(selectedOS)} 
-                        isEscalated={getDynamicPriority(selectedOS) !== selectedOS.priority} 
-                      />
+                <div className="flex justify-between items-start">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="technical-label text-brand-red">OS-{selectedOS.number.toString().padStart(4, '0')}</span>
+                      <div className="w-1 h-1 rounded-full bg-brand-red animate-pulse" />
                     </div>
+                    <div className="flex items-center gap-3">
+                      <h2 className="text-3xl font-black tracking-tight uppercase italic">
+                        {clients.find(c => c.id === selectedOS.client_id)?.name || 'CLIENTE_NULL'}
+                      </h2>
+                      {clients.find(c => c.id === selectedOS.client_id)?.phone && (
+                        <a
+                          href={`https://wa.me/${clients.find(c => c.id === selectedOS.client_id)?.phone?.replace(/\D/g, '')}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2 bg-brand-surface border border-brand-border text-emerald-500 hover:border-emerald-500 transition-colors"
+                        >
+                          <MessageSquare size={18} />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                  <PriorityBadge
+                    priority={getDynamicPriority(selectedOS)}
+                    isEscalated={getDynamicPriority(selectedOS) !== selectedOS.priority}
+                  />
+                </div>
 
                 <div className="technical-card p-6 space-y-6">
                   <div className="grid grid-cols-2 gap-6">
                     <div className="space-y-2">
+                      <span className="technical-label text-[8px]">CAMINHÃO / PLACA</span>
+                      <p className="text-xs font-mono text-white uppercase">{selectedOS.truckModel ? `${selectedOS.truckModel} (${selectedOS.truckPlate || 'S/ Placa'})` : 'N/A'}</p>
+                    </div>
+                    <div className="space-y-2">
                       <span className="technical-label text-[8px]">TIPO_MÓVEL</span>
                       <p className="text-xs font-mono text-white uppercase">{selectedOS.furnitureType || 'N/A'}</p>
                     </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-6">
                     <div className="space-y-2">
                       <span className="technical-label text-[8px]">TECIDO</span>
                       <p className="text-xs font-mono text-white uppercase">{selectedOS.fabric || 'N/A'}</p>
@@ -1187,7 +1296,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                     <span className="technical-label">DESCRIÇÃO_TÉCNICA</span>
                   </div>
                   <p className="text-slate-300 font-mono text-sm leading-relaxed uppercase">{selectedOS.description}</p>
-                  
+
                   {(selectedOS.furnitureType || selectedOS.fabric) && (
                     <div className="grid grid-cols-2 gap-6 pt-6 border-t border-brand-line">
                       {selectedOS.furnitureType && (
@@ -1237,13 +1346,12 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                     <div className="w-2 h-2 bg-brand-red rotate-45" />
                     <h3 className="font-black text-lg uppercase italic">STATUS_INSTALAÇÃO</h3>
                   </div>
-                  <button 
+                  <button
                     onClick={() => toggleInstallationReady(selectedOS.id)}
-                    className={`w-full flex items-center gap-4 p-5 technical-card transition-all text-left group ${
-                      selectedOS.isReadyForInstallation 
-                        ? 'border-emerald-500/30 bg-emerald-500/5' 
+                    className={`w-full flex items-center gap-4 p-5 technical-card transition-all text-left group ${selectedOS.isReadyForInstallation
+                        ? 'border-emerald-500/30 bg-emerald-500/5'
                         : 'hover:border-brand-line'
-                    }`}
+                      }`}
                   >
                     <div className={`w-6 h-6 border flex items-center justify-center transition-colors ${selectedOS.isReadyForInstallation ? 'bg-emerald-500 border-emerald-500 text-brand-dark' : 'border-brand-line group-hover:border-brand-red'}`}>
                       {selectedOS.isReadyForInstallation && <CheckCircle2 size={14} strokeWidth={3} />}
@@ -1274,7 +1382,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
 
               <div className="p-6 bg-brand-surface border-t border-brand-border shrink-0 space-y-4">
                 {selectedOS.status === 'aberta' && (
-                  <button 
+                  <button
                     onClick={() => updateOSStatus(selectedOS.id, 'em_andamento')}
                     className="w-full bg-brand-red text-white py-5 font-black uppercase tracking-widest glow-red active:scale-95 transition-all"
                   >
@@ -1283,13 +1391,13 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                 )}
                 {selectedOS.status === 'em_andamento' && (
                   <div className="flex gap-4">
-                    <button 
+                    <button
                       onClick={() => updateOSStatus(selectedOS.id, 'pausada')}
                       className="flex-1 bg-brand-surface border border-brand-border text-amber-500 py-5 font-black uppercase tracking-widest active:scale-95 transition-all"
                     >
                       PAUSAR
                     </button>
-                    <button 
+                    <button
                       onClick={() => setIsPhotoModalOpen(true)}
                       className="flex-[2] bg-emerald-600 text-white py-5 font-black uppercase tracking-widest glow-red active:scale-95 transition-all"
                     >
@@ -1298,7 +1406,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                   </div>
                 )}
                 {selectedOS.status === 'pausada' && (
-                  <button 
+                  <button
                     onClick={() => updateOSStatus(selectedOS.id, 'em_andamento')}
                     className="w-full bg-brand-red text-white py-5 font-black uppercase tracking-widest glow-red active:scale-95 transition-all"
                   >
@@ -1310,13 +1418,13 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                     <button className="flex-1 bg-brand-surface border border-brand-border text-slate-400 py-5 font-black uppercase tracking-widest active:scale-95 transition-all">
                       LOGS
                     </button>
-                    <button 
+                    <button
                       onClick={() => generateOSPDF(selectedOS)}
                       className="flex-1 bg-brand-red text-white py-5 font-black uppercase tracking-widest glow-red active:scale-95 transition-all"
                     >
                       EXPORTAR PDF
                     </button>
-                    <button 
+                    <button
                       onClick={() => shareOnWhatsApp(selectedOS)}
                       className="flex-1 bg-emerald-600 text-white py-5 font-black uppercase tracking-widest active:scale-95 transition-all flex items-center justify-center gap-2"
                     >
@@ -1325,7 +1433,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                     </button>
                   </div>
                 )}
-                <button 
+                <button
                   onClick={() => setIsDeleteConfirmOpen(true)}
                   className="w-full flex items-center justify-center gap-3 text-rose-500 font-black uppercase tracking-widest py-4 border border-rose-500/20 hover:bg-rose-500/5 transition-all"
                 >
@@ -1335,7 +1443,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
               </div>
             </motion.div>
           ) : managementView !== 'none' ? (
-            <motion.div 
+            <motion.div
               key="management-view"
               initial={{ x: '100%' }}
               animate={{ x: 0 }}
@@ -1343,7 +1451,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
               className="absolute inset-0 bg-brand-dark z-30 p-6 space-y-8 overflow-y-auto technical-grid"
             >
               <div className="scanline" />
-              
+
               {managementView === 'clients' && (
                 <div className="space-y-8">
                   <div className="flex items-center gap-5">
@@ -1361,14 +1469,15 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                       <div className="w-1 h-3 bg-brand-red" />
                       <span className="technical-label">NOVO_CADASTRO</span>
                     </div>
-                    <MobileInput label="NOME_COMPLETO" value={newClient.name} onChange={v => setNewClient({...newClient, name: v})} placeholder="DIGITE O NOME..." />
+                    <MobileInput label="NOME_COMPLETO" value={newClient.name} onChange={v => setNewClient({ ...newClient, name: v })} placeholder="DIGITE O NOME..." />
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                      <MobileInput label="WHATSAPP_ID" value={newClient.phone} onChange={v => setNewClient({...newClient, phone: v})} placeholder="(00) 00000-0000" />
-                      <MobileInput label="EMAIL_ADDR" value={newClient.email} onChange={v => setNewClient({...newClient, email: v})} placeholder="CLIENTE@EMAIL.COM" />
+                      <MobileInput label="WHATSAPP_ID" value={newClient.phone} onChange={v => setNewClient({ ...newClient, phone: v })} placeholder="(00) 00000-0000" />
+                      <MobileInput label="EMAIL_ADDR" value={newClient.email} onChange={v => setNewClient({ ...newClient, email: v })} placeholder="CLIENTE@EMAIL.COM" />
                     </div>
-                    <MobileInput label="LOCAL_ADDR" value={newClient.address} onChange={v => setNewClient({...newClient, address: v})} placeholder="RUA, NÚMERO, BAIRRO..." />
-                    <button 
-                      type="submit"
+                    <MobileInput label="LOCAL_ADDR" value={newClient.address} onChange={v => setNewClient({ ...newClient, address: v })} placeholder="RUA, NÚMERO, BAIRRO..." />
+                    <button
+                      type="button"
+                      onClick={handleAddClient}
                       disabled={isSubmitting}
                       className="w-full py-5 bg-brand-red text-white font-black uppercase tracking-widest glow-red flex items-center justify-center gap-3"
                     >
@@ -1402,7 +1511,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                         </div>
                         <div className="flex items-center gap-3">
                           {client.phone && (
-                            <a 
+                            <a
                               href={`https://wa.me/${client.phone.replace(/\D/g, '')}`}
                               target="_blank"
                               rel="noopener noreferrer"
@@ -1412,7 +1521,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                             </a>
                           )}
                           {userProfile?.role === 'admin' && (
-                            <button 
+                            <button
                               onClick={(e) => {
                                 e.stopPropagation();
                                 handleDeleteClient(client.id);
@@ -1446,7 +1555,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                       <div className="w-1 h-4 bg-brand-red" />
                       <h3 className="font-bold uppercase italic">PERFIL_USUÁRIO</h3>
                     </div>
-                    
+
                     <div className="flex items-center gap-6 p-4 bg-brand-dark border border-brand-line">
                       <div className="w-16 h-16 bg-brand-surface border border-brand-red flex items-center justify-center text-brand-red overflow-hidden">
                         {userProfile?.photoURL ? (
@@ -1462,35 +1571,35 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                       </div>
                     </div>
 
-                      <div className="space-y-4">
-                        <div className="flex items-center justify-between p-4 bg-brand-dark border border-brand-line">
-                          <div className="flex items-center gap-3">
-                            <Bell size={18} className="text-brand-red" />
-                            <div>
-                              <p className="text-[10px] font-black uppercase italic">NOTIFICAÇÕES_PUSH</p>
-                              <p className="text-[7px] technical-label">ALERTAS DE NOVAS ORDENS</p>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            {notificationPermission === 'default' && (
-                              <button 
-                                onClick={requestNotificationPermission}
-                                className="px-2 py-1 bg-brand-red text-white text-[7px] font-black uppercase"
-                              >
-                                ATIVAR
-                              </button>
-                            )}
-                            <button 
-                              onClick={() => setNotifications(!notifications)}
-                              className={`w-10 h-5 border transition-all relative ${notifications ? 'bg-brand-red border-brand-red' : 'bg-brand-dark border-brand-line'}`}
-                            >
-                              <div className={`absolute top-0.5 w-2.5 h-2.5 transition-all ${notifications ? 'right-0.5 bg-white' : 'left-0.5 bg-slate-600'} rotate-45`} />
-                            </button>
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between p-4 bg-brand-dark border border-brand-line">
+                        <div className="flex items-center gap-3">
+                          <Bell size={18} className="text-brand-red" />
+                          <div>
+                            <p className="text-[10px] font-black uppercase italic">NOTIFICAÇÕES_PUSH</p>
+                            <p className="text-[7px] technical-label">ALERTAS DE NOVAS ORDENS</p>
                           </div>
                         </div>
+                        <div className="flex items-center gap-3">
+                          {notificationPermission === 'default' && (
+                            <button
+                              onClick={requestNotificationPermission}
+                              className="px-2 py-1 bg-brand-red text-white text-[7px] font-black uppercase"
+                            >
+                              ATIVAR
+                            </button>
+                          )}
+                          <button
+                            onClick={() => setNotifications(!notifications)}
+                            className={`w-10 h-5 border transition-all relative ${notifications ? 'bg-brand-red border-brand-red' : 'bg-brand-dark border-brand-line'}`}
+                          >
+                            <div className={`absolute top-0.5 w-2.5 h-2.5 transition-all ${notifications ? 'right-0.5 bg-white' : 'left-0.5 bg-slate-600'} rotate-45`} />
+                          </button>
+                        </div>
+                      </div>
 
-                        <button 
-                          onClick={() => auth.signOut()}
+                      <button
+                        onClick={() => auth.signOut()}
                         className="w-full py-5 bg-brand-surface border border-rose-500/30 text-rose-500 font-black uppercase tracking-widest hover:bg-rose-500/5 transition-all flex items-center justify-center gap-3"
                       >
                         <LogOut size={20} />
@@ -1521,14 +1630,14 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                           <span className="technical-label">REGISTRO_TÉCNICO</span>
                         </div>
                         <div className="flex items-center gap-2 bg-brand-surface p-1 border border-brand-border">
-                          <button 
+                          <button
                             type="button"
                             onClick={() => setRegType('manual')}
                             className={`px-3 py-1 text-[8px] font-black uppercase tracking-widest transition-all ${regType === 'manual' ? 'bg-brand-red text-white' : 'text-slate-500 hover:text-white'}`}
                           >
                             MANUAL
                           </button>
-                          <button 
+                          <button
                             type="button"
                             onClick={() => setRegType('google')}
                             className={`px-3 py-1 text-[8px] font-black uppercase tracking-widest transition-all ${regType === 'google' ? 'bg-brand-red text-white' : 'text-slate-500 hover:text-white'}`}
@@ -1539,9 +1648,9 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                       </div>
 
                       <div className="space-y-4">
-                        <MobileInput label="NOME_TÉCNICO" value={newTech.name} onChange={v => setNewTech({...newTech, name: v})} placeholder="NOME DO TAPECEIRO..." />
-                        <MobileInput label="EMAIL_ADDR" value={newTech.email} onChange={v => setNewTech({...newTech, email: v})} placeholder="EMAIL@EMPRESA.COM" />
-                        
+                        <MobileInput label="NOME_TÉCNICO" value={newTech.name} onChange={v => setNewTech({ ...newTech, name: v })} placeholder="NOME DO TAPECEIRO..." />
+                        <MobileInput label="EMAIL_ADDR" value={newTech.email} onChange={v => setNewTech({ ...newTech, email: v })} placeholder="EMAIL@EMPRESA.COM" />
+
                         <div className="space-y-2">
                           <label className="technical-label">NÍVEL_ACESSO</label>
                           <div className="grid grid-cols-2 gap-4">
@@ -1549,12 +1658,11 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                               <button
                                 key={r}
                                 type="button"
-                                onClick={() => setNewTech({...newTech, role: r as UserRole})}
-                                className={`py-3 border font-black uppercase tracking-widest text-[10px] transition-all ${
-                                  newTech.role === r 
-                                    ? 'bg-brand-red border-brand-red text-white' 
+                                onClick={() => setNewTech({ ...newTech, role: r as UserRole })}
+                                className={`py-3 border font-black uppercase tracking-widest text-[10px] transition-all ${newTech.role === r
+                                    ? 'bg-brand-red border-brand-red text-white'
                                     : 'bg-brand-surface border-brand-border text-slate-500'
-                                }`}
+                                  }`}
                               >
                                 {r}
                               </button>
@@ -1563,14 +1671,14 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                         </div>
                       </div>
 
-                      <button 
+                      <button
                         type="submit"
                         disabled={isSubmitting}
                         className="w-full py-5 bg-brand-red text-white font-black uppercase tracking-widest glow-red flex items-center justify-center gap-3"
                       >
                         {isSubmitting ? <Loader2 className="animate-spin" /> : `CADASTRAR (${regType.toUpperCase()})`}
                       </button>
-                      
+
                       {regType === 'google' ? (
                         <div className="p-4 bg-brand-surface border border-brand-border space-y-2">
                           <p className="text-[8px] font-mono text-slate-500 uppercase">
@@ -1578,7 +1686,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                           </p>
                           <div className="flex items-center justify-between gap-4">
                             <code className="text-[8px] font-mono text-brand-red truncate">{window.location.origin}</code>
-                            <button 
+                            <button
                               type="button"
                               onClick={() => {
                                 navigator.clipboard.writeText(window.location.origin);
@@ -1622,16 +1730,15 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                             <div className="flex items-center gap-3 mt-1">
                               <span className="technical-label text-[8px]">{tech.email}</span>
                               <div className="w-1 h-1 bg-brand-line rounded-full" />
-                              <span className={`text-[8px] font-mono uppercase tracking-widest ${
-                                tech.id.startsWith('manual_') ? 'text-amber-500' : 'text-emerald-500'
-                              }`}>
+                              <span className={`text-[8px] font-mono uppercase tracking-widest ${tech.id.startsWith('manual_') ? 'text-amber-500' : 'text-emerald-500'
+                                }`}>
                                 {tech.id.startsWith('manual_') ? 'MANUAL' : 'GOOGLE_LINK'}
                               </span>
                             </div>
                           </div>
                         </div>
                         {userProfile?.role === 'admin' && tech.id !== user?.uid && (
-                          <button 
+                          <button
                             onClick={() => handleDeleteTech(tech.id)}
                             className="p-3 text-rose-500 hover:bg-rose-500/10 transition-all"
                           >
@@ -1662,19 +1769,19 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                         <div className="w-1 h-3 bg-brand-red" />
                         <span className="technical-label">NOVO_SERVIÇO</span>
                       </div>
-                      <MobileInput 
-                        label="NOME_SERVIÇO" 
-                        value={newService.name} 
-                        onChange={v => setNewService({...newService, name: v})} 
-                        placeholder="EX: REFORMA DE SOFÁ, HIGIENIZAÇÃO..." 
+                      <MobileInput
+                        label="NOME_SERVIÇO"
+                        value={newService.name}
+                        onChange={v => setNewService({ ...newService, name: v })}
+                        placeholder="EX: REFORMA DE SOFÁ, HIGIENIZAÇÃO..."
                       />
-                      <MobileInput 
-                        label="DESCRIÇÃO_DETALHADA" 
-                        value={newService.description} 
-                        onChange={v => setNewService({...newService, description: v})} 
-                        placeholder="DETALHES DO SERVIÇO..." 
+                      <MobileInput
+                        label="DESCRIÇÃO_DETALHADA"
+                        value={newService.description}
+                        onChange={v => setNewService({ ...newService, description: v })}
+                        placeholder="DETALHES DO SERVIÇO..."
                       />
-                      <button 
+                      <button
                         type="submit"
                         disabled={isSubmitting}
                         className="w-full py-5 bg-brand-red text-white font-black uppercase tracking-widest glow-red flex items-center justify-center gap-3"
@@ -1702,7 +1809,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                             </div>
                           </div>
                           {['admin', 'gestor'].includes(userProfile?.role || '') && (
-                            <button 
+                            <button
                               onClick={() => handleDeleteService(service.id)}
                               className="p-3 text-rose-500 hover:bg-rose-500/10 transition-all"
                             >
@@ -1727,8 +1834,8 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                       <ArrowLeft size={20} />
                     </button>
                     <div>
-                      <h2 className="text-3xl font-black tracking-tight uppercase italic">API_KEY</h2>
-                      <span className="technical-label text-brand-red">INTEGRAÇÃO_IA</span>
+                      <h2 className="text-3xl font-black tracking-tight uppercase italic">INTELIGÊNCIA ARTIFICIAL</h2>
+                      <span className="technical-label text-brand-red">SISTEMA_DE_VOZ</span>
                     </div>
                   </div>
 
@@ -1736,7 +1843,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <div className="w-1 h-4 bg-brand-red" />
-                        <h3 className="font-bold uppercase italic">GEMINI_IA_CONFIG</h3>
+                        <h3 className="font-bold uppercase italic">CONFIGURAÇÃO DO ASSISTENTE IA</h3>
                       </div>
                     </div>
 
@@ -1747,19 +1854,32 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                       </p>
                     </div>
 
-                    <MobileInput 
-                      label="GEMINI_API_TOKEN" 
-                      value={apiKey} 
-                      onChange={setApiKey} 
-                      placeholder="INSIRA SUA CHAVE..." 
+                    <div className="space-y-1.5">
+                      <label className="technical-label text-[10px]">PROVEDOR_DE_IA</label>
+                      <select
+                        value={aiProvider}
+                        onChange={(e) => setAiProvider(e.target.value)}
+                        className="w-full bg-brand-surface border border-brand-border px-3 py-3 font-mono text-xs text-white outline-none focus:border-brand-red transition-all appearance-none uppercase"
+                      >
+                        <option value="gemini">Google Gemini</option>
+                        <option value="openai">OpenAI (ChatGPT)</option>
+                      </select>
+                    </div>
+
+                    <MobileInput
+                      label="CHAVE_DE_API_DA_IA"
+                      value={apiKey}
+                      onChange={setApiKey}
+                      placeholder="INSIRA SUA CHAVE DA IA AQUI..."
                       type="password"
                     />
-                    
-                    <button 
+
+                    <button
                       onClick={handleSaveApiKey}
-                      className="w-full py-5 bg-brand-red text-white font-black uppercase tracking-widest glow-red flex items-center justify-center gap-3"
+                      disabled={isSubmitting}
+                      className="w-full py-5 bg-brand-red text-white font-black uppercase tracking-widest glow-red flex items-center justify-center gap-3 disabled:opacity-50"
                     >
-                      SALVAR_CONFIG_IA
+                      {isSubmitting ? <Loader2 className="animate-spin" size={24} /> : 'VALIDAR E SALVAR CHAVE'}
                     </button>
                   </div>
 
@@ -1769,7 +1889,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                         <div className="w-1 h-4 bg-brand-red" />
                         <h3 className="font-bold uppercase italic">ACESSO_API_EXTERNA</h3>
                       </div>
-                      <button 
+                      <button
                         onClick={handleGenerateApiKey}
                         className="text-[10px] font-black text-brand-red uppercase tracking-widest hover:underline"
                       >
@@ -1814,7 +1934,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
               )}
             </motion.div>
           ) : (
-            <motion.div 
+            <motion.div
               key={activeTab}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1823,7 +1943,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
             >
               {activeTab === 'dashboard' && (
                 <div className="space-y-6 pb-24">
-                  <motion.div 
+                  <motion.div
                     whileTap={{ scale: 0.98 }}
                     onClick={() => setIsModalOpen(true)}
                     className="technical-card p-4 flex items-center gap-4 cursor-pointer group"
@@ -1844,33 +1964,33 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                   </motion.div>
 
                   <div className="grid grid-cols-2 gap-3">
-                    <MobileStatCard 
-                      label="ORDENS ABERTAS" 
-                      value={stats?.open || 0} 
-                      icon={<Clock size={20} />} 
+                    <MobileStatCard
+                      label="ORDENS ABERTAS"
+                      value={stats?.open || 0}
+                      icon={<Clock size={20} />}
                       trend="+12%"
                     />
-                    <MobileStatCard 
-                      label="EM EXECUÇÃO" 
-                      value={stats?.inProgress || 0} 
-                      icon={<AlertCircle size={20} />} 
+                    <MobileStatCard
+                      label="EM EXECUÇÃO"
+                      value={stats?.inProgress || 0}
+                      icon={<AlertCircle size={20} />}
                       trend="ESTÁVEL"
                     />
-                    <MobileStatCard 
-                      label="FINALIZADAS" 
-                      value={stats?.completed || 0} 
-                      icon={<CheckCircle2 size={20} />} 
+                    <MobileStatCard
+                      label="FINALIZADAS"
+                      value={stats?.completed || 0}
+                      icon={<CheckCircle2 size={20} />}
                       trend="+5"
                     />
-                    <MobileStatCard 
-                      label="TOTAL DB" 
-                      value={stats?.total || 0} 
-                      icon={<ClipboardList size={20} />} 
+                    <MobileStatCard
+                      label="TOTAL DB"
+                      value={stats?.total || 0}
+                      icon={<ClipboardList size={20} />}
                     />
                   </div>
 
                   {['admin', 'gestor'].includes(userProfile?.role || '') && (
-                    <motion.div 
+                    <motion.div
                       whileTap={{ scale: 0.98 }}
                       onClick={() => setManagementView('techs')}
                       className="technical-card p-4 flex items-center gap-4 cursor-pointer group border-brand-red/20 hover:border-brand-red transition-all"
@@ -1900,7 +2020,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                         <BarChartIcon size={16} className="text-brand-red" />
                       </div>
                     </div>
-                    
+
                     <div className="h-40 relative min-w-0">
                       <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={100}>
                         <PieChart>
@@ -1916,7 +2036,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                               <Cell key={`cell-${index}`} fill={entry.fill} />
                             ))}
                           </Pie>
-                          <Tooltip 
+                          <Tooltip
                             contentStyle={{ backgroundColor: '#0F0F0F', border: '1px solid #1A1A1A', borderRadius: '0', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.5)' }}
                             itemStyle={{ color: '#fff', fontFamily: 'JetBrains Mono', fontSize: '9px', textTransform: 'uppercase' }}
                           />
@@ -1927,7 +2047,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                         <span className="text-xl font-black tracking-tighter">{stats?.total || 0}</span>
                       </div>
                     </div>
-                    
+
                     <div className="grid grid-cols-3 gap-1.5 mt-4">
                       {pieData.map(item => (
                         <div key={item.name} className="flex flex-col items-center p-1.5 bg-brand-dark border border-brand-border">
@@ -1949,12 +2069,12 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                     </div>
                     <div className="space-y-4">
                       {orders.slice(0, 3).map(os => (
-                        <MobileOSCard 
-                          key={os.id} 
-                          os={os} 
+                        <MobileOSCard
+                          key={os.id}
+                          os={os}
                           clientName={clients.find(c => c.id === os.client_id)?.name}
                           whatsapp={clients.find(c => c.id === os.client_id)?.phone}
-                          onClick={() => setSelectedOS(os)} 
+                          onClick={() => setSelectedOS(os)}
                           onDelete={(e) => {
                             e.stopPropagation();
                             setSelectedOS(os);
@@ -1972,14 +2092,13 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                   <div className="flex items-center justify-between sticky top-0 bg-brand-dark/80 backdrop-blur-md py-3 z-10 border-b border-brand-border px-1">
                     <div className="flex gap-2 overflow-x-auto no-scrollbar flex-1">
                       {['TODAS', 'ABERTAS', 'EM CURSO', 'CONCLUÍDAS'].map((filter) => (
-                        <button 
+                        <button
                           key={filter}
                           onClick={() => setOrderFilter(filter as any)}
-                          className={`px-3 py-1.5 font-black text-[9px] uppercase tracking-tighter transition-all whitespace-nowrap ${
-                            orderFilter === filter 
-                              ? 'bg-brand-red text-white glow-red' 
+                          className={`px-3 py-1.5 font-black text-[9px] uppercase tracking-tighter transition-all whitespace-nowrap ${orderFilter === filter
+                              ? 'bg-brand-red text-white glow-red'
                               : 'bg-brand-surface border border-brand-border text-slate-500'
-                          }`}
+                            }`}
                         >
                           {filter}
                         </button>
@@ -1992,12 +2111,12 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                   <div className="space-y-3 px-1">
                     {filteredOrders.length > 0 ? (
                       filteredOrders.map(os => (
-                        <MobileOSCard 
-                          key={os.id} 
-                          os={os} 
+                        <MobileOSCard
+                          key={os.id}
+                          os={os}
                           clientName={clients.find(c => c.id === os.client_id)?.name}
                           whatsapp={clients.find(c => c.id === os.client_id)?.phone}
-                          onClick={() => setSelectedOS(os)} 
+                          onClick={() => setSelectedOS(os)}
                           onDelete={(e) => {
                             e.stopPropagation();
                             setSelectedOS(os);
@@ -2036,9 +2155,8 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                           <button
                             key={view}
                             onClick={() => setAgendaView(view)}
-                            className={`px-4 py-2 text-[7px] sm:text-[8px] font-black uppercase tracking-tighter transition-all ${
-                              agendaView === view ? 'bg-brand-red text-white glow-red' : 'text-slate-500 hover:text-slate-300'
-                            }`}
+                            className={`px-4 py-2 text-[7px] sm:text-[8px] font-black uppercase tracking-tighter transition-all ${agendaView === view ? 'bg-brand-red text-white glow-red' : 'text-slate-500 hover:text-slate-300'
+                              }`}
                           >
                             {view}
                           </button>
@@ -2047,7 +2165,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                     </div>
 
                     <div className="flex items-center justify-between bg-brand-surface border border-brand-border p-4 shadow-lg">
-                      <button 
+                      <button
                         onClick={() => navigateAgenda('prev')}
                         className="p-2 hover:bg-brand-dark text-brand-red transition-colors"
                       >
@@ -2055,19 +2173,19 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                       </button>
                       <div className="flex flex-col items-center">
                         <span className="font-black text-sm uppercase italic tracking-widest">
-                          {agendaView === 'DIA' 
+                          {agendaView === 'DIA'
                             ? format(selectedAgendaDate, "EEEE, dd 'de' MMMM", { locale: ptBR }).toUpperCase()
                             : format(selectedAgendaDate, "MMMM 'de' yyyy", { locale: ptBR }).toUpperCase()
                           }
                         </span>
-                        <button 
+                        <button
                           onClick={() => setSelectedAgendaDate(new Date())}
                           className="technical-label text-[7px] text-brand-red hover:underline mt-1"
                         >
                           IR_PARA_HOJE
                         </button>
                       </div>
-                      <button 
+                      <button
                         onClick={() => navigateAgenda('next')}
                         className="p-2 hover:bg-brand-dark text-brand-red transition-colors"
                       >
@@ -2084,11 +2202,10 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                         <button
                           key={p}
                           onClick={() => setAgendaPriorityFilter(p)}
-                          className={`px-3 py-1.5 text-[7px] font-black uppercase tracking-tighter border transition-all shrink-0 ${
-                            agendaPriorityFilter === p 
-                              ? 'bg-brand-red border-brand-red text-white glow-red' 
+                          className={`px-3 py-1.5 text-[7px] font-black uppercase tracking-tighter border transition-all shrink-0 ${agendaPriorityFilter === p
+                              ? 'bg-brand-red border-brand-red text-white glow-red'
                               : 'bg-brand-dark border-brand-border text-slate-500 hover:border-brand-red/50'
-                          }`}
+                            }`}
                         >
                           {p === 'todas' ? 'TODAS' : p === 'alta' ? 'ALTA' : p === 'media' ? 'MÉDIA' : 'BAIXA'}
                         </button>
@@ -2105,14 +2222,13 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                           const dayNumber = format(date, 'dd');
 
                           return (
-                            <button 
+                            <button
                               key={date.toISOString()}
                               onClick={() => setSelectedAgendaDate(date)}
-                              className={`flex flex-col items-center justify-center min-w-[56px] h-20 border transition-all ${
-                                isSelected 
-                                  ? 'bg-brand-red border-brand-red text-white glow-red' 
+                              className={`flex flex-col items-center justify-center min-w-[56px] h-20 border transition-all ${isSelected
+                                  ? 'bg-brand-red border-brand-red text-white glow-red'
                                   : 'bg-brand-surface border-brand-border text-slate-500 hover:border-brand-red/50'
-                              }`}
+                                }`}
                             >
                               <span className="text-[7px] font-black uppercase tracking-tighter mb-1 opacity-70">{dayName}</span>
                               <span className="text-xl font-black font-mono tracking-tighter">{dayNumber}</span>
@@ -2133,11 +2249,11 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                                     {os.deadline ? format(new Date(os.deadline), 'HH:mm') : 'HORÁRIO_N/A'}
                                   </span>
                                 </div>
-                                <MobileOSCard 
-                                  os={os} 
+                                <MobileOSCard
+                                  os={os}
                                   clientName={clients.find(c => c.id === os.client_id)?.name}
                                   whatsapp={clients.find(c => c.id === os.client_id)?.phone}
-                                  onClick={() => setSelectedOS(os)} 
+                                  onClick={() => setSelectedOS(os)}
                                   onDelete={(e) => {
                                     e.stopPropagation();
                                     setSelectedOS(os);
@@ -2172,7 +2288,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                           const dayOrders = getOrdersForDate(date);
                           const isToday = isSameDay(date, new Date());
                           return (
-                            <div 
+                            <div
                               key={date.toISOString()}
                               className={`technical-card p-4 border-l-2 ${isToday ? 'border-l-brand-red bg-brand-red/5' : 'border-l-brand-border'}`}
                             >
@@ -2188,7 +2304,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                               <div className="space-y-2">
                                 {dayOrders.length > 0 ? (
                                   dayOrders.map(os => (
-                                    <div 
+                                    <div
                                       key={os.id}
                                       onClick={() => setSelectedOS(os)}
                                       className="flex items-center justify-between p-2 bg-brand-dark border border-brand-border hover:border-brand-red transition-colors cursor-pointer"
@@ -2236,12 +2352,11 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                                 setSelectedAgendaDate(date);
                                 setAgendaView('DIA');
                               }}
-                              className={`aspect-square flex flex-col items-center justify-center transition-all relative group ${
-                                isSelected ? 'bg-brand-red text-white z-10 glow-red' :
-                                isToday ? 'bg-brand-red/10 text-brand-red' :
-                                isCurrentMonth ? 'bg-brand-surface text-slate-300' :
-                                'bg-brand-dark text-slate-700'
-                              }`}
+                              className={`aspect-square flex flex-col items-center justify-center transition-all relative group ${isSelected ? 'bg-brand-red text-white z-10 glow-red' :
+                                  isToday ? 'bg-brand-red/10 text-brand-red' :
+                                    isCurrentMonth ? 'bg-brand-surface text-slate-300' :
+                                      'bg-brand-dark text-slate-700'
+                                }`}
                             >
                               <span className={`text-xs font-black italic ${isSelected ? 'text-white' : isToday ? 'text-brand-red' : isCurrentMonth ? 'text-slate-300' : 'text-slate-700'}`}>
                                 {format(date, 'd')}
@@ -2249,9 +2364,9 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                               {dayOrders.length > 0 && (
                                 <div className="absolute bottom-1.5 flex gap-0.5">
                                   {dayOrders.slice(0, 3).map((os, idx) => (
-                                    <div 
-                                      key={idx} 
-                                      className={`w-1 h-1 rotate-45 ${os.priority === 'alta' ? 'bg-brand-red shadow-[0_0_5px_rgba(239,68,68,0.5)]' : 'bg-amber-500'}`} 
+                                    <div
+                                      key={idx}
+                                      className={`w-1 h-1 rotate-45 ${os.priority === 'alta' ? 'bg-brand-red shadow-[0_0_5px_rgba(239,68,68,0.5)]' : 'bg-amber-500'}`}
                                     />
                                   ))}
                                   {dayOrders.length > 3 && <div className="w-1 h-1 rounded-full bg-white/50" />}
@@ -2265,7 +2380,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                           );
                         })}
                       </div>
-                      
+
                       <div className="p-4 bg-brand-surface border border-brand-border space-y-4 shadow-xl relative overflow-hidden">
                         <div className="absolute top-0 right-0 w-16 h-16 bg-brand-red/5 -mr-8 -mt-8 rotate-45" />
                         <div className="flex items-center gap-2 mb-1">
@@ -2340,7 +2455,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                     </div>
                   </div>
 
-                  <button 
+                  <button
                     onClick={handleLogout}
                     className="w-full py-4 bg-brand-surface border border-rose-500/30 text-rose-500 font-black uppercase tracking-widest hover:bg-rose-500/5 transition-all flex items-center justify-center gap-3 text-[10px]"
                   >
@@ -2356,36 +2471,36 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
       {/* Bottom Navigation */}
       <nav className="bg-brand-surface border-t border-brand-border px-4 py-2 flex items-center justify-between shrink-0 z-20 relative">
         <div className="absolute bottom-0 left-0 w-full h-[1px] bg-brand-red/20" />
-        
-        <BottomNavItem 
-          active={activeTab === 'dashboard'} 
-          onClick={() => { setActiveTab('dashboard'); setManagementView('none'); setSelectedOS(null); }} 
-          icon={<LayoutDashboard size={20} />} 
-          label="DASHBOARD" 
+
+        <BottomNavItem
+          active={activeTab === 'dashboard'}
+          onClick={() => { setActiveTab('dashboard'); setManagementView('none'); setSelectedOS(null); }}
+          icon={<LayoutDashboard size={20} />}
+          label="DASHBOARD"
         />
-        <BottomNavItem 
-          active={activeTab === 'orders'} 
-          onClick={() => { setActiveTab('orders'); setManagementView('none'); setSelectedOS(null); }} 
-          icon={<ClipboardList size={20} />} 
-          label="TERMINAL" 
+        <BottomNavItem
+          active={activeTab === 'orders'}
+          onClick={() => { setActiveTab('orders'); setManagementView('none'); setSelectedOS(null); }}
+          icon={<ClipboardList size={20} />}
+          label="TERMINAL"
         />
-        <BottomNavItem 
-          active={activeTab === 'agenda'} 
-          onClick={() => { setActiveTab('agenda'); setManagementView('none'); setSelectedOS(null); }} 
-          icon={<CalendarIcon size={20} />} 
-          label="AGENDA" 
+        <BottomNavItem
+          active={activeTab === 'agenda'}
+          onClick={() => { setActiveTab('agenda'); setManagementView('none'); setSelectedOS(null); }}
+          icon={<CalendarIcon size={20} />}
+          label="AGENDA"
         />
-        <BottomNavItem 
-          active={activeTab === 'profile'} 
-          onClick={() => { setActiveTab('profile'); setManagementView('none'); setSelectedOS(null); }} 
-          icon={<User size={20} />} 
-          label="SISTEMA" 
+        <BottomNavItem
+          active={activeTab === 'profile'}
+          onClick={() => { setActiveTab('profile'); setManagementView('none'); setSelectedOS(null); }}
+          icon={<User size={20} />}
+          label="SISTEMA"
         />
       </nav>
 
       {/* Floating Action Button */}
       {!selectedOS && managementView === 'none' && activeTab !== 'profile' && (
-        <motion.button 
+        <motion.button
           whileTap={{ scale: 0.9 }}
           onClick={() => setIsModalOpen(true)}
           className="fixed right-6 bottom-28 w-16 h-16 bg-brand-red rounded-2xl flex items-center justify-center text-white shadow-[0_0_30px_rgba(225,29,72,0.4)] z-40"
@@ -2398,7 +2513,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
       <AnimatePresence>
         {isDeleteConfirmOpen && (
           <div className="fixed inset-0 bg-brand-dark/95 backdrop-blur-xl z-50 flex items-center justify-center p-4">
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
@@ -2409,7 +2524,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                   <div className="w-1 h-4 bg-brand-red" />
                   <h2 className="text-2xl font-black uppercase italic tracking-tight">CONFIRMAR_EXCLUSÃO</h2>
                 </div>
-                
+
                 <div className="p-4 bg-brand-surface border border-brand-line">
                   <p className="text-[10px] font-mono text-slate-400 uppercase leading-relaxed">
                     ATENÇÃO: ESTA AÇÃO É IRREVERSÍVEL. TODOS OS DADOS DESTA ORDEM DE SERVIÇO SERÃO REMOVIDOS PERMANENTEMENTE DO SISTEMA.
@@ -2417,13 +2532,13 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
-                  <button 
+                  <button
                     onClick={() => setIsDeleteConfirmOpen(false)}
                     className="py-5 bg-brand-surface border border-brand-border text-slate-400 font-black uppercase tracking-widest hover:border-brand-red hover:text-white transition-all"
                   >
                     CANCELAR
                   </button>
-                  <button 
+                  <button
                     onClick={() => selectedOS && handleDeleteOS(selectedOS.id)}
                     className="py-5 bg-rose-600 text-white font-black uppercase tracking-widest glow-red"
                   >
@@ -2440,7 +2555,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
       <AnimatePresence>
         {isPhotoModalOpen && (
           <div className="fixed inset-0 bg-brand-dark/95 backdrop-blur-xl z-50 flex items-center justify-center p-4">
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
@@ -2456,7 +2571,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                     <X size={20} />
                   </button>
                 </div>
-                
+
                 <div className="p-4 bg-brand-surface border border-brand-line">
                   <p className="text-[10px] font-mono text-slate-400 uppercase leading-relaxed">
                     INSTRUÇÃO: ANEXE UMA FOTO DO PRODUTO INSTALADO PARA CONFIRMAÇÃO DE ENTREGA E ENCERRAMENTO DO PROTOCOLO.
@@ -2472,11 +2587,11 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
 
                 <div className="bg-brand-dark border border-brand-red/30 relative group min-h-[300px] flex flex-col items-center justify-center p-4">
                   <div className="absolute top-2 left-2 technical-label text-[8px] opacity-50">CAMPO_FOTO</div>
-                  
+
                   {capturedPhoto ? (
                     <div className="relative w-full h-full">
                       <img src={capturedPhoto} alt="Preview" className="w-full h-64 object-cover rounded border border-brand-line" loading="lazy" />
-                      <button 
+                      <button
                         onClick={() => setCapturedPhoto(null)}
                         className="absolute top-2 right-2 p-2 bg-brand-red text-white rounded-full shadow-lg"
                       >
@@ -2485,7 +2600,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                     </div>
                   ) : (
                     <div className="flex flex-col items-center gap-4">
-                      <button 
+                      <button
                         onClick={() => fileInputRef.current?.click()}
                         className="w-20 h-20 rounded-full bg-brand-surface border border-brand-line flex items-center justify-center text-brand-red hover:bg-brand-red hover:text-white transition-all"
                       >
@@ -2494,27 +2609,27 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                       <span className="text-[10px] font-mono text-slate-500 uppercase">CLIQUE PARA CAPTURAR OU ANEXAR</span>
                     </div>
                   )}
-                  
-                  <input 
-                    type="file" 
+
+                  <input
+                    type="file"
                     ref={fileInputRef}
                     accept="image/*"
                     capture="environment"
                     onChange={handlePhotoCapture}
                     className="hidden"
                   />
-                  
+
                   <div className="absolute bottom-2 right-2 w-4 h-4 border-b border-r border-brand-red/30" />
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
-                  <button 
+                  <button
                     onClick={() => setIsPhotoModalOpen(false)}
                     className="py-5 bg-brand-surface border border-brand-border text-slate-400 font-black uppercase tracking-widest hover:border-brand-red hover:text-white transition-all"
                   >
                     CANCELAR
                   </button>
-                  <button 
+                  <button
                     onClick={handleFinishOS}
                     disabled={isFinalizing}
                     className="py-5 bg-brand-red text-white font-black uppercase tracking-widest glow-red disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
@@ -2539,7 +2654,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
       <AnimatePresence>
         {isModalOpen && (
           <div className="fixed inset-0 bg-brand-dark/95 backdrop-blur-xl z-50 flex items-center justify-center p-3">
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
@@ -2555,8 +2670,8 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button 
-                      type="button" 
+                    <button
+                      type="button"
                       onClick={clearDraft}
                       className="p-2 bg-brand-dark border border-brand-border text-slate-500 hover:text-brand-red transition-all"
                       title="LIMPAR RASCUNHO"
@@ -2569,17 +2684,17 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                   </div>
                 </div>
 
-                <VoiceAssistant 
-                  clients={clients.map(c => ({ id: c.id, name: c.name }))} 
-                  onDataExtracted={handleVoiceData} 
+                <VoiceAssistant
+                  clients={clients.map(c => ({ id: c.id, name: c.name }))}
+                  onDataExtracted={handleVoiceData}
                 />
-                
+
                 <div className="space-y-5">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                  <div className="grid grid-cols-1 gap-5">
                     <div className="space-y-1.5">
                       <div className="flex justify-between items-center px-1">
                         <label className="technical-label text-[8px]">CLIENTE_ID</label>
-                        <button 
+                        <button
                           type="button"
                           onClick={() => { setIsModalOpen(false); setManagementView('clients'); }}
                           className="text-[7px] font-black text-brand-red uppercase tracking-widest hover:underline"
@@ -2587,9 +2702,9 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                           + NOVO
                         </button>
                       </div>
-                      <select 
+                      <select
                         value={formData.client_id}
-                        onChange={e => setFormData({...formData, client_id: e.target.value})}
+                        onChange={e => setFormData({ ...formData, client_id: e.target.value })}
                         className="w-full bg-brand-surface border border-brand-border px-3 py-3 font-mono text-[10px] text-white outline-none focus:border-brand-red transition-all appearance-none uppercase"
                         required
                       >
@@ -2599,79 +2714,65 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                         ))}
                       </select>
                     </div>
-                    <div className="space-y-1.5">
-                      <div className="flex justify-between items-center px-1">
-                        <label className="technical-label text-[8px]">TIPO_SERVIÇO</label>
-                        <button 
-                          type="button"
-                          onClick={() => { setIsModalOpen(false); setManagementView('services'); }}
-                          className="text-[7px] font-black text-brand-red uppercase tracking-widest hover:underline"
-                        >
-                          + NOVO
-                        </button>
-                      </div>
-                      <select 
-                        value={formData.service_id}
-                        onChange={e => {
-                          const s = services.find(s => s.id === e.target.value);
-                          setFormData({
-                            ...formData, 
-                            service_id: e.target.value,
-                            description: s ? s.description || s.name : formData.description
-                          });
-                        }}
-                        className="w-full bg-brand-surface border border-brand-border px-3 py-3 font-mono text-[10px] text-white outline-none focus:border-brand-red transition-all appearance-none uppercase"
-                      >
-                        <option value="">SELECIONAR_SERVIÇO</option>
-                        {services.map(s => (
-                          <option key={s.id} value={s.id}>{s.name}</option>
-                        ))}
-                      </select>
-                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                    <MobileInput 
-                      label="TIPO_MÓVEL" 
-                      value={formData.furnitureType || ''} 
-                      onChange={v => setFormData({...formData, furnitureType: v})} 
+                    <MobileInput
+                      label="MODELO_CAMINHÃO"
+                      value={formData.truckModel || ''}
+                      onChange={v => setFormData({ ...formData, truckModel: v })}
+                      placeholder="EX: SCANIA FH"
+                    />
+                    <MobileInput
+                      label="PLACA_CAMINHÃO"
+                      value={formData.truckPlate || ''}
+                      onChange={v => setFormData({ ...formData, truckPlate: v.toUpperCase() })}
+                      placeholder="EX: ABC-1234"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                    <MobileInput
+                      label="TIPO_MÓVEL"
+                      value={formData.furnitureType || ''}
+                      onChange={v => setFormData({ ...formData, furnitureType: v })}
                       placeholder="EX: SOFÁ_CAM_CAMINHÃO"
                     />
-                    <MobileInput 
-                      label="ESPEC_TECIDO" 
-                      value={formData.fabric || ''} 
-                      onChange={v => setFormData({...formData, fabric: v})} 
+                    <MobileInput
+                      label="ESPEC_TECIDO"
+                      value={formData.fabric || ''}
+                      onChange={v => setFormData({ ...formData, fabric: v })}
                       placeholder="EX: VELUDO_PRETO_DIAMANTE"
                     />
                   </div>
 
-                  <MobileInput 
-                    label="DESCRIÇÃO_TÉCNICA" 
-                    value={formData.description} 
-                    onChange={v => setFormData({...formData, description: v})} 
+                  <MobileInput
+                    label="DESCRIÇÃO_TÉCNICA"
+                    value={formData.description}
+                    onChange={v => setFormData({ ...formData, description: v })}
                     placeholder="DETALHAMENTO_DO_SERVIÇO..."
                     multiline
                   />
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                    <MobileInput 
-                      label="VALOR_TOTAL (R$)" 
-                      value={formData.value || ''} 
-                      onChange={v => setFormData({...formData, value: v})} 
+                    <MobileInput
+                      label="VALOR_TOTAL (R$)"
+                      value={formData.value || ''}
+                      onChange={v => setFormData({ ...formData, value: v })}
                       placeholder="0,00"
                     />
-                    <MobileInput 
-                      label="FORMA_PAGAMENTO" 
-                      value={formData.paymentMethod || ''} 
-                      onChange={v => setFormData({...formData, paymentMethod: v})} 
+                    <MobileInput
+                      label="FORMA_PAGAMENTO"
+                      value={formData.paymentMethod || ''}
+                      onChange={v => setFormData({ ...formData, paymentMethod: v })}
                       placeholder="EX: PIX / CARTÃO"
                     />
                   </div>
 
-                  <MobileInput 
-                    label="OBSERVAÇÕES_ADICIONAIS" 
-                    value={formData.notes || ''} 
-                    onChange={v => setFormData({...formData, notes: v})} 
+                  <MobileInput
+                    label="OBSERVAÇÕES_ADICIONAIS"
+                    value={formData.notes || ''}
+                    onChange={v => setFormData({ ...formData, notes: v })}
                     placeholder="NOTAS_INTERNAS_OU_EXTERNAS..."
                     multiline
                   />
@@ -2679,9 +2780,9 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
                     <div className="space-y-1.5">
                       <label className="technical-label px-1 text-[8px]">PRIORIDADE_LVL</label>
-                      <select 
+                      <select
                         value={formData.priority}
-                        onChange={e => setFormData({...formData, priority: e.target.value as OSPriority})}
+                        onChange={e => setFormData({ ...formData, priority: e.target.value as OSPriority })}
                         className="w-full bg-brand-surface border border-brand-border px-3 py-3 font-mono text-[10px] text-white outline-none focus:border-brand-red transition-all appearance-none uppercase"
                       >
                         <option value="baixa">BAIXA</option>
@@ -2691,17 +2792,17 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                     </div>
                     <div className="space-y-1.5">
                       <label className="technical-label px-1 text-[8px]">DATA_ENTREGA (DEADLINE)</label>
-                      <input 
+                      <input
                         type="date"
                         value={formData.deadline}
-                        onChange={e => setFormData({...formData, deadline: e.target.value})}
+                        onChange={e => setFormData({ ...formData, deadline: e.target.value })}
                         className="w-full bg-brand-surface border border-brand-border px-3 py-3 font-mono text-[10px] text-white outline-none focus:border-brand-red transition-all appearance-none uppercase"
                       />
                     </div>
                   </div>
                 </div>
 
-                <button 
+                <button
                   disabled={isSubmitting}
                   type="submit"
                   className="w-full py-4 bg-brand-red text-white font-black uppercase tracking-widest glow-red flex items-center justify-center gap-3 text-xs"
@@ -2715,7 +2816,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
 
         {confirmAction && (
           <div className="fixed inset-0 bg-brand-dark/90 backdrop-blur-md z-[100] flex items-center justify-center p-6">
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               className="technical-card w-full max-w-sm p-8 space-y-6 border-brand-red/50"
@@ -2728,13 +2829,13 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
                 {confirmAction.message}
               </p>
               <div className="grid grid-cols-2 gap-4">
-                <button 
+                <button
                   onClick={() => setConfirmAction(null)}
                   className="py-4 bg-brand-surface border border-brand-border text-slate-500 font-black uppercase text-[10px] tracking-widest"
                 >
                   CANCELAR
                 </button>
-                <button 
+                <button
                   onClick={confirmAction.onConfirm}
                   className="py-4 bg-brand-red text-white font-black uppercase text-[10px] tracking-widest glow-red"
                 >
@@ -2747,7 +2848,7 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
 
         {alertMessage && (
           <div className="fixed inset-0 bg-brand-dark/90 backdrop-blur-md z-[100] flex items-center justify-center p-6">
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               className={`technical-card w-full max-w-sm p-8 space-y-6 ${alertMessage.type === 'success' ? 'border-emerald-500/50' : 'border-rose-500/50'}`}
@@ -2759,11 +2860,10 @@ _Enviado via Sistema de Gestão Só Sofá Cama_`;
               <p className="text-slate-400 font-mono text-xs uppercase leading-relaxed">
                 {alertMessage.message}
               </p>
-              <button 
+              <button
                 onClick={() => setAlertMessage(null)}
-                className={`w-full py-4 font-black uppercase text-[10px] tracking-widest ${
-                  alertMessage.type === 'success' ? 'bg-emerald-500 text-white glow-emerald' : 'bg-rose-500 text-white glow-red'
-                }`}
+                className={`w-full py-4 font-black uppercase text-[10px] tracking-widest ${alertMessage.type === 'success' ? 'bg-emerald-500 text-white glow-emerald' : 'bg-rose-500 text-white glow-red'
+                  }`}
               >
                 ENTENDIDO
               </button>
@@ -2785,7 +2885,7 @@ function BottomNavItem({ active, icon, label, onClick }: { active: boolean, icon
         {label}
       </span>
       {active && (
-        <motion.div 
+        <motion.div
           layoutId="nav-indicator"
           className="absolute -top-2 w-8 h-[2px] bg-brand-red left-1/2 -translate-x-1/2"
         />
@@ -2814,7 +2914,7 @@ function MobileStatCard({ label, value, icon, trend }: { label: string, value: n
             {value.toString().padStart(2, '0')}
           </span>
           <div className="w-1 h-3 bg-brand-red/20 relative overflow-hidden">
-            <motion.div 
+            <motion.div
               initial={{ height: 0 }}
               animate={{ height: '100%' }}
               transition={{ repeat: Infinity, duration: 2 }}
@@ -2829,14 +2929,14 @@ function MobileStatCard({ label, value, icon, trend }: { label: string, value: n
 
 const getDynamicPriority = (os: ServiceOrder): OSPriority => {
   if (!os.deadline || os.status === 'concluida') return os.priority;
-  
+
   const now = new Date();
   const deadline = new Date(os.deadline);
-  
+
   // Reset hours to compare dates only
   now.setHours(0, 0, 0, 0);
   deadline.setHours(0, 0, 0, 0);
-  
+
   const diffTime = deadline.getTime() - now.getTime();
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
@@ -2862,7 +2962,7 @@ function MobileOSCard({ os, onClick, onDelete, clientName, whatsapp }: { os: Ser
   };
 
   return (
-    <motion.div 
+    <motion.div
       whileTap={{ scale: 0.98 }}
       onClick={onClick}
       className="w-full technical-card p-4 text-left hover:border-brand-line transition-all group relative cursor-pointer"
@@ -2882,7 +2982,7 @@ function MobileOSCard({ os, onClick, onDelete, clientName, whatsapp }: { os: Ser
           </h4>
         </div>
         <div className="flex items-center gap-1.5">
-          <button 
+          <button
             onClick={onDelete}
             className="p-1.5 bg-brand-dark border border-brand-border text-slate-700 hover:text-rose-500 hover:border-rose-500 transition-all"
           >
@@ -2928,7 +3028,7 @@ function MobileInput({ label, value, onChange, placeholder, multiline = false, t
     <div className="space-y-1.5">
       <label className="technical-label ml-1">{label}</label>
       {multiline ? (
-        <textarea 
+        <textarea
           value={value}
           onChange={e => onChange(e.target.value)}
           placeholder={placeholder}
@@ -2936,7 +3036,7 @@ function MobileInput({ label, value, onChange, placeholder, multiline = false, t
           className="w-full bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-3 font-medium text-slate-100 outline-none focus:border-red-500/50 focus:ring-1 ring-red-500/20 placeholder:text-slate-600 transition-all resize-none"
         />
       ) : (
-        <input 
+        <input
           type={type}
           value={value}
           onChange={e => onChange(e.target.value)}

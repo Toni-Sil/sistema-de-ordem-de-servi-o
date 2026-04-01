@@ -13,6 +13,16 @@
 }
 
 @layer base {
+  html, body {
+    overflow-x: hidden;
+    -ms-overflow-style: none; /* IE and Edge */
+    scrollbar-width: none; /* Firefox */
+  }
+  
+  *::-webkit-scrollbar {
+    display: none; /* Chrome, Safari and Opera */
+  }
+
   body {
     @apply bg-brand-dark text-slate-50 font-sans antialiased selection:bg-brand-red selection:text-white;
   }
